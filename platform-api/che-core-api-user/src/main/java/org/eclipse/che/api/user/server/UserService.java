@@ -131,19 +131,20 @@ public class UserService extends Service {
      * @see #remove(String)
      */
     @ApiOperation(value = "Create a new user",
-            notes = "Create a new user in the system",
-            response = UserDescriptor.class,
-            position = 1)
+                  notes = "Create a new user in the system",
+                  response = UserDescriptor.class,
+                  position = 1)
     @ApiResponses({@ApiResponse(code = 201, message = "Created"),
                    @ApiResponse(code = 401, message = "Missed token parameter"),
                    @ApiResponse(code = 409, message = "Invalid token"),
+                   @ApiResponse(code = 403, message = "Invalid or absent request parameters"),
                    @ApiResponse(code = 500, message = "Internal Server Error")})
     @POST
     @Path("/create")
-    @Consumes("application/json")
+    @Consumes(APPLICATION_JSON)
     @Produces(APPLICATION_JSON)
     @GenerateLink(rel = LINK_REL_CREATE_USER)
-    public Response create(NewUser newUser,
+    public Response create(@ApiParam(value = "New user") NewUser newUser,
                            @ApiParam(value = "Authentication token") @QueryParam("token") String token,
                            @ApiParam(value = "User type") @QueryParam("temporary") @DefaultValue("false") Boolean isTemporary,
                            @Context SecurityContext context) throws ApiException {
