@@ -12,8 +12,11 @@ package org.eclipse.che.api.machine.server.proxy;
 
 import com.google.common.io.ByteStreams;
 
+import org.eclipse.che.api.core.NotFoundException;
 import org.eclipse.che.api.machine.server.MachineManager;
-import org.eclipse.che.commons.lang.Pair;
+import org.eclipse.che.api.machine.server.exception.MachineException;
+import org.eclipse.che.api.machine.server.impl.MachineImpl;
+import org.eclipse.che.api.machine.shared.Server;
 
 import javax.inject.Inject;
 import javax.inject.Named;
@@ -29,7 +32,10 @@ import java.net.URL;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import static javax.servlet.http.HttpServletResponse.SC_INTERNAL_SERVER_ERROR;
 import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
 
 /**
@@ -39,6 +45,7 @@ import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
  */
 @Singleton
 public class MachineExtensionProxyServlet extends HttpServlet {
+    private static final Pattern EXTENSION_API_URI = Pattern.compile("/api/ext/(?<machineId>[^/]+)/.*");
     private final int            extServicesPort;
     private final MachineManager machineManager;
 
@@ -48,85 +55,116 @@ public class MachineExtensionProxyServlet extends HttpServlet {
         this.machineManager = machineManager;
     }
 
+    // fixme secure request to another's machine
+
+    // todo handle https to http
+
+    // todo remove headers if it's name is in connection headers
+
+    // fixme proxy should ensure that http 1.1 request contains hosts header
+
     @Override
     public void service(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        final ProxyRequest proxyRequest = new ProxyRequest(extServicesPort, machineManager, req);
+        try {
+            HttpURLConnection conn = prepareProxyConnection(req);
 
-        // fixme secure request to another's machine
+            try {
+                conn.connect();
 
-        // todo handle https to http
-
-        // fixme if machine does not exist or start or other machine error occurs respond with another message
-
-        // todo remove headers if it's name is in connection headers
-
-        // fixme proxy should ensure that http 1.1 request contains hosts header
-
-        if (proxyRequest.isValid()) {
-
-            proxyRequest.setMethod(req.getMethod());
-            proxyRequest.setUri(req.getQueryString() == null ? req.getRequestURI() : req.getRequestURI() + "?" + req.getQueryString());
-            copyHeadersToProxyRequest(proxyRequest, req);
-
-            if ("POST".equals(req.getMethod()) || "PUT".equals(req.getMethod()) || "DELETE".equals(req.getMethod())) {
-                proxyRequest.setInputStream(req.getInputStream());
+                setResponse(resp, conn);
+            } finally {
+                conn.disconnect();
             }
 
-            executeProxyRequest(proxyRequest, resp);
-        } else {
-            resp.sendError(SC_NOT_FOUND, "Request can't be forwarded to machine. No machine id is found in " + req.getRequestURI());
+        } catch (NotFoundException e) {
+            resp.sendError(SC_NOT_FOUND, "Request can't be forwarded to machine. " + e.getLocalizedMessage());
+        } catch (MachineException e) {
+            resp.sendError(SC_INTERNAL_SERVER_ERROR, "Request can't be forwarded to machine. " + e.getLocalizedMessage());
         }
     }
 
-    private void copyHeadersToProxyRequest(ProxyRequest proxyRequest, HttpServletRequest request) {
+    private HttpURLConnection prepareProxyConnection(HttpServletRequest req) throws NotFoundException, MachineException {
+        String machineId = getMachineId(req);
+
+        String extensionApiUrl = getExtensionApiUrl(machineId, req);
+        try {
+            final HttpURLConnection conn = (HttpURLConnection)new URL(extensionApiUrl).openConnection();
+
+            conn.setRequestMethod(req.getMethod());
+
+            copyHeaders(conn, req);
+
+            if ("POST".equals(req.getMethod()) || "PUT".equals(req.getMethod()) || "DELETE".equals(req.getMethod())) {
+                if (req.getInputStream() != null) {
+                    conn.setDoOutput(true);
+
+                    try (InputStream is = req.getInputStream()) {
+                        ByteStreams.copy(is, conn.getOutputStream());
+                    }
+                }
+            }
+
+            return conn;
+        } catch (IOException e) {
+            throw new MachineException(e.getLocalizedMessage());
+        }
+    }
+
+    private String getExtensionApiUrl(String machineId, HttpServletRequest req) throws NotFoundException, MachineException {
+        final MachineImpl machine = machineManager.getMachine(machineId);
+        final Server server = machine.getMetadata().getServers().get(Integer.toString(extServicesPort));
+        final StringBuilder url = new StringBuilder("http://")
+                .append(server.getAddress())
+                .append(req.getRequestURI());
+        if (req.getQueryString() != null) {
+            url.append("?").append(req.getQueryString());
+        }
+        return url.toString();
+    }
+
+    private void setResponse(HttpServletResponse resp, HttpURLConnection conn) throws MachineException {
+        try {
+            resp.setStatus(conn.getResponseCode());
+
+            InputStream responseStream = conn.getErrorStream();
+
+            if (responseStream == null) {
+                responseStream = conn.getInputStream();
+            }
+
+            // copy headers from proxy response to origin response
+            for (Map.Entry<String, List<String>> header : conn.getHeaderFields().entrySet()) {
+                for (String headerValue : header.getValue()) {
+                    resp.addHeader(header.getKey(), headerValue);
+                }
+            }
+
+            // copy content of input or error stream from destination response to output stream of origin response
+            try (OutputStream os = resp.getOutputStream()) {
+                ByteStreams.copy(responseStream, os);
+            }
+        } catch (IOException e) {
+            throw new MachineException(e.getLocalizedMessage());
+        }
+    }
+
+    private String getMachineId(HttpServletRequest req) throws NotFoundException {
+        final Matcher matcher = EXTENSION_API_URI.matcher(req.getRequestURI());
+        if (matcher.matches()) {
+            return matcher.group("machineId");
+        }
+        throw new NotFoundException("No machine id is found in " + req.getRequestURI());
+    }
+
+    private void copyHeaders(HttpURLConnection conn, HttpServletRequest request) {
         final Enumeration<String> headerNames = request.getHeaderNames();
         while (headerNames.hasMoreElements()) {
             final String headerName = headerNames.nextElement();
 
             final Enumeration<String> headerValues = request.getHeaders(headerName);
             while (headerValues.hasMoreElements()) {
-                proxyRequest.addHeader(headerName, headerValues.nextElement());
+                conn.setRequestProperty(headerName, headerValues.nextElement());
             }
-        }
-    }
-
-    private void executeProxyRequest(ProxyRequest proxyRequest, HttpServletResponse resp) throws IOException {
-        final HttpURLConnection conn = (HttpURLConnection)new URL(proxyRequest.getEndpointUrl()).openConnection();
-
-        conn.setRequestMethod(proxyRequest.getMethod());
-
-        for (Pair<String, String> header : proxyRequest.getHeaders()) {
-            conn.setRequestProperty(header.first, header.second);
-        }
-
-        if (proxyRequest.getInputStream() != null) {
-            conn.setDoOutput(true);
-
-            try(InputStream is = proxyRequest.getInputStream()) {
-                ByteStreams.copy(is, conn.getOutputStream());
-            }
-        }
-
-        conn.connect();
-
-        resp.setStatus(conn.getResponseCode());
-
-        InputStream responseStream = conn.getErrorStream();
-
-        if (responseStream == null) {
-            responseStream = conn.getInputStream();
-        }
-
-        // copy headers from proxy response to origin response
-        for (Map.Entry<String, List<String>> header : conn.getHeaderFields().entrySet()) {
-            for (String headerValue : header.getValue()) {
-                resp.addHeader(header.getKey(), headerValue);
-            }
-        }
-
-        // copy content of input or error stream from destination response to output stream of origin response
-        try (OutputStream os = resp.getOutputStream()) {
-            ByteStreams.copy(responseStream, os);
         }
     }
 }

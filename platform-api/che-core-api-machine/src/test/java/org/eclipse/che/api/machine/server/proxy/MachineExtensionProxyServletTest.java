@@ -38,7 +38,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
 public class MachineExtensionProxyServletTest {
     private static final String MACHINE_ID              = "machine123";
@@ -132,8 +131,7 @@ public class MachineExtensionProxyServletTest {
         proxyServlet.service(mockRequest, mockResponse);
 
         assertEquals(mockResponse.getStatus(), 200);
-        // fixme why it has extra line break?
-        assertEquals(mockResponse.getOutputContent().trim(), DEFAULT_RESPONSE_ENTITY);
+        assertEquals(mockResponse.getOutputContent(), DEFAULT_RESPONSE_ENTITY);
     }
 
     @Test
@@ -165,9 +163,7 @@ public class MachineExtensionProxyServletTest {
 
         assertEquals(mockResponse.getStatus(), 200);
         for (Map.Entry<String, List<String>> expectedHeader : headers.entrySet()) {
-            System.out.println(headers.get(expectedHeader.getKey()));
-            System.out.println(mockResponse.getHeaders(expectedHeader.getKey()));
-            assertTrue(headers.get(expectedHeader.getKey()).equals(mockResponse.getHeaders(expectedHeader.getKey())));
+            assertEquals(headers.get(expectedHeader.getKey()), mockResponse.getHeaders(expectedHeader.getKey()));
         }
     }
 
@@ -246,7 +242,7 @@ public class MachineExtensionProxyServletTest {
                     response.addHeader(header.getKey(), headerValue);
                 }
             }
-            response.getWriter().println(extApiResponse.getEntity());
+            response.getWriter().print(extApiResponse.getEntity());
             baseRequest.setHandled(true);
         }
     }
