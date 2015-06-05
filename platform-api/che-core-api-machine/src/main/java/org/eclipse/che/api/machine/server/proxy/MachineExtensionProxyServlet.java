@@ -46,7 +46,9 @@ import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
 @Singleton
 public class MachineExtensionProxyServlet extends HttpServlet {
     private static final Pattern EXTENSION_API_URI = Pattern.compile("/api/ext/(?<machineId>[^/]+)/.*");
-    private final int            extServicesPort;
+
+    private final int extServicesPort;
+
     private final MachineManager machineManager;
 
     @Inject
@@ -153,7 +155,7 @@ public class MachineExtensionProxyServlet extends HttpServlet {
         if (matcher.matches()) {
             return matcher.group("machineId");
         }
-        throw new NotFoundException("No machine id is found in " + req.getRequestURI());
+        throw new NotFoundException("No machine id is found in request.");
     }
 
     private void copyHeaders(HttpURLConnection conn, HttpServletRequest request) {
@@ -161,10 +163,30 @@ public class MachineExtensionProxyServlet extends HttpServlet {
         while (headerNames.hasMoreElements()) {
             final String headerName = headerNames.nextElement();
 
-            final Enumeration<String> headerValues = request.getHeaders(headerName);
-            while (headerValues.hasMoreElements()) {
-                conn.setRequestProperty(headerName, headerValues.nextElement());
+            if (!skipHeader(headerName)) {
+                final Enumeration<String> headerValues = request.getHeaders(headerName);
+                while (headerValues.hasMoreElements()) {
+                    conn.setRequestProperty(headerName, headerValues.nextElement());
+                }
             }
         }
+    }
+
+    /**
+     * Checks if the header should not be copied by proxy.<br>
+     * <a href="http://tools.ietf.org/html/rfc2616#section-13.5.1">RFC-2616 Section 13.5.1</a>
+     *
+     * @param headerName the header name to check.
+     * @return {@code true} if the header should be skipped, false otherwise.
+     */
+    public static boolean skipHeader(final String headerName) {
+        return headerName.equalsIgnoreCase("Connection") ||
+               headerName.equalsIgnoreCase("Keep-Alive") ||
+               headerName.equalsIgnoreCase("Proxy-Authentication") ||
+               headerName.equalsIgnoreCase("Proxy-Authorization") ||
+               headerName.equalsIgnoreCase("TE") ||
+               headerName.equalsIgnoreCase("Trailers") ||
+               headerName.equalsIgnoreCase("Transfer-Encoding") ||
+               headerName.equalsIgnoreCase("Upgrade");
     }
 }
