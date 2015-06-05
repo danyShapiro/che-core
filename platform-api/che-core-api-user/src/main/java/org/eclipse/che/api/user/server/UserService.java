@@ -18,6 +18,7 @@ import com.wordnik.swagger.annotations.ApiParam;
 import com.wordnik.swagger.annotations.ApiResponse;
 import com.wordnik.swagger.annotations.ApiResponses;
 
+import org.eclipse.che.api.core.ApiException;
 import org.eclipse.che.api.core.ConflictException;
 import org.eclipse.che.api.core.ForbiddenException;
 import org.eclipse.che.api.core.NotFoundException;
@@ -34,6 +35,7 @@ import org.eclipse.che.api.user.server.dao.Profile;
 import org.eclipse.che.api.user.server.dao.User;
 import org.eclipse.che.api.user.server.dao.UserDao;
 import org.eclipse.che.api.user.server.dao.UserProfileDao;
+import org.eclipse.che.api.user.shared.dto.NewUser;
 import org.eclipse.che.api.user.shared.dto.UserDescriptor;
 import org.eclipse.che.api.user.shared.dto.UserInRoleDescriptor;
 import org.eclipse.che.commons.env.EnvironmentContext;
@@ -60,10 +62,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static javax.ws.rs.core.MediaType.APPLICATION_FORM_URLENCODED;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 import static javax.ws.rs.core.Response.Status.CREATED;
 import static javax.ws.rs.core.Response.status;
+import static org.eclipse.che.api.user.server.Constants.ID_LENGTH;
 import static org.eclipse.che.api.user.server.Constants.LINK_REL_CREATE_USER;
 import static org.eclipse.che.api.user.server.Constants.LINK_REL_GET_CURRENT_USER;
 import static org.eclipse.che.api.user.server.Constants.LINK_REL_GET_CURRENT_USER_PROFILE;
@@ -123,9 +127,9 @@ public class UserService extends Service {
      * @see #remove(String)
      */
     @ApiOperation(value = "Create a new user",
-                  notes = "Create a new user in the system",
-                  response = UserDescriptor.class,
-                  position = 1)
+            notes = "Create a new user in the system",
+            response = UserDescriptor.class,
+            position = 1)
     @ApiResponses({@ApiResponse(code = 201, message = "Created"),
                    @ApiResponse(code = 401, message = "Missed token parameter"),
                    @ApiResponse(code = 409, message = "Invalid token"),
@@ -133,33 +137,45 @@ public class UserService extends Service {
     @POST
     @Path("/create")
     @GenerateLink(rel = LINK_REL_CREATE_USER)
+    @Consumes("application/json")
     @Produces(APPLICATION_JSON)
-    public Response create(@ApiParam(value = "Authentication token", required = true) @QueryParam("token") @Required String token,
-                           @ApiParam(value = "User type") @QueryParam("temporary") boolean isTemporary,
-                           @Context SecurityContext context) throws UnauthorizedException,
-                                                                    ConflictException,
-                                                                    ServerException,
-                                                                    NotFoundException {
-        if (token == null) {
-            throw new UnauthorizedException("Missed token parameter");
+    public Response create(NewUser newUser,
+                           @ApiParam(value = "Authentication token") @QueryParam("token") String token,
+                           @ApiParam(value = "User type") @QueryParam("temporary") @DefaultValue("false") Boolean isTemporary,
+                           @Context SecurityContext context) throws ApiException {
+        final User user = new User();
+        //when system/admin creates user it should be created based on newUser parameter
+        if (context.isUserInRole("system/admin")) {
+            if (newUser == null) {
+                throw new ForbiddenException("New user required");
+            }
+            if (isNullOrEmpty(newUser.getEmail())) {
+                throw new ForbiddenException("User email required");
+            }
+            user.setEmail(newUser.getEmail());
+            if (!isNullOrEmpty(newUser.getPassword())) {
+                checkPassword(newUser.getPassword());
+                user.setPassword(newUser.getPassword());
+            }
+            //otherwise user will be created based on token
+        } else {
+            if (token == null) {
+                throw new UnauthorizedException("Missed token parameter");
+            }
+            user.setEmail(tokenValidator.validateToken(token));
         }
-        final String email = tokenValidator.validateToken(token);
-        final String id = generate("user", Constants.ID_LENGTH);
+        if (user.getPassword() == null) {
+            user.setPassword(generate("password", PASSWORD_LENGTH));
+        }
 
-        //creating user
-        final User user = new User().withId(id)
-                                    .withEmail(email)
-                                    .withPassword(generate("pass", PASSWORD_LENGTH));
-        userDao.create(user);
+        userDao.create(user.withId(generate("user", ID_LENGTH)));
 
-        //creating profile
-        profileDao.create(new Profile().withId(id).withUserId(id));
+        profileDao.create(new Profile().withId(user.getId()).withUserId(user.getId()));
 
-        //storing preferences
         final Map<String, String> preferences = new HashMap<>(4);
-        preferences.put("temporary", String.valueOf(isTemporary));
+        preferences.put("temporary", Boolean.toString(isTemporary));
         preferences.put("codenvy:created", Long.toString(System.currentTimeMillis()));
-        preferenceDao.setPreferences(id, preferences);
+        preferenceDao.setPreferences(user.getId(), preferences);
 
         return status(CREATED).entity(toDescriptor(user, context)).build();
     }
@@ -212,7 +228,7 @@ public class UserService extends Service {
     @Consumes(APPLICATION_FORM_URLENCODED)
     public void updatePassword(@ApiParam(value = "New password", required = true)
                                @FormParam("password")
-                               String password) throws NotFoundException, ServerException, ConflictException {
+                               String password) throws NotFoundException, ServerException, ForbiddenException {
         checkPassword(password);
 
         final User user = userDao.getById(currentUser().getId());
@@ -368,16 +384,18 @@ public class UserService extends Service {
             throw new ForbiddenException(String.format("Only system scope is handled for now. Provided scope is %s", scope));
         }
 
-        return DtoFactory.getInstance().createDto(UserInRoleDescriptor.class).withIsInRole(isInRole).withRoleName(role).withScope(scope).withScopeId(scopeId);
+        return DtoFactory.getInstance().createDto(UserInRoleDescriptor.class).withIsInRole(isInRole).withRoleName(role).withScope(scope)
+                         .withScopeId(
+                                 scopeId);
 
     }
 
-    private void checkPassword(String password) throws ConflictException {
+    private void checkPassword(String password) throws ForbiddenException {
         if (password == null) {
-            throw new ConflictException("Password required");
+            throw new ForbiddenException("Password required");
         }
         if (password.length() < 8) {
-            throw new ConflictException("Password should contain at least 8 characters");
+            throw new ForbiddenException("Password should contain at least 8 characters");
         }
         int numOfLetters = 0;
         int numOfDigits = 0;
@@ -390,7 +408,7 @@ public class UserService extends Service {
             }
         }
         if (numOfDigits == 0 || numOfLetters == 0) {
-            throw new ConflictException("Password should contain letters and digits");
+            throw new ForbiddenException("Password should contain letters and digits");
         }
     }
 
