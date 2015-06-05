@@ -13,7 +13,7 @@ package org.eclipse.che.api.user.shared.dto;
 import org.eclipse.che.dto.shared.DTO;
 
 /**
- * Describes new system user
+ * Describes new user
  *
  * @author Eugene Voevodin
  */

@@ -62,6 +62,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static javax.ws.rs.core.MediaType.APPLICATION_FORM_URLENCODED;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -107,6 +108,9 @@ public class UserService extends Service {
 
     /**
      * Creates new user and profile.
+     * <p/>
+     * When current user is in 'system/admin' role then {@code newUser} parameter
+     * will be used for user creation, otherwise method uses {@code token} and {@link #tokenValidator}.
      *
      * @param token
      *         authentication token
@@ -136,15 +140,15 @@ public class UserService extends Service {
                    @ApiResponse(code = 500, message = "Internal Server Error")})
     @POST
     @Path("/create")
-    @GenerateLink(rel = LINK_REL_CREATE_USER)
     @Consumes("application/json")
     @Produces(APPLICATION_JSON)
+    @GenerateLink(rel = LINK_REL_CREATE_USER)
     public Response create(NewUser newUser,
                            @ApiParam(value = "Authentication token") @QueryParam("token") String token,
                            @ApiParam(value = "User type") @QueryParam("temporary") @DefaultValue("false") Boolean isTemporary,
                            @Context SecurityContext context) throws ApiException {
-        final User user = new User();
-        //when system/admin creates user it should be created based on newUser parameter
+        String email;
+        String password = null;
         if (context.isUserInRole("system/admin")) {
             if (newUser == null) {
                 throw new ForbiddenException("New user required");
@@ -152,25 +156,23 @@ public class UserService extends Service {
             if (isNullOrEmpty(newUser.getEmail())) {
                 throw new ForbiddenException("User email required");
             }
-            user.setEmail(newUser.getEmail());
-            if (!isNullOrEmpty(newUser.getPassword())) {
+            email = newUser.getEmail();
+            if (newUser.getPassword() != null) {
                 checkPassword(newUser.getPassword());
-                user.setPassword(newUser.getPassword());
+                password = newUser.getPassword();
             }
-            //otherwise user will be created based on token
         } else {
             if (token == null) {
                 throw new UnauthorizedException("Missed token parameter");
             }
-            user.setEmail(tokenValidator.validateToken(token));
+            email = tokenValidator.validateToken(token);
         }
-        if (user.getPassword() == null) {
-            user.setPassword(generate("password", PASSWORD_LENGTH));
-        }
+        final User user = new User().withId(generate("user", ID_LENGTH))
+                                    .withEmail(email)
+                                    .withPassword(firstNonNull(password, generate("", PASSWORD_LENGTH)));
+        userDao.create(user);
 
-        userDao.create(user.withId(generate("user", ID_LENGTH)));
-
-        profileDao.create(new Profile().withId(user.getId()).withUserId(user.getId()));
+        profileDao.create(new Profile(user.getId()));
 
         final Map<String, String> preferences = new HashMap<>(4);
         preferences.put("temporary", Boolean.toString(isTemporary));
@@ -208,7 +210,7 @@ public class UserService extends Service {
      *
      * @param password
      *         new user password
-     * @throws ConflictException
+     * @throws ForbiddenException
      *         when given password is {@code null}
      * @throws ServerException
      *         when some error occurred while updating profile
@@ -219,7 +221,7 @@ public class UserService extends Service {
                   position = 3)
     @ApiResponses({@ApiResponse(code = 204, message = "OK"),
                    @ApiResponse(code = 404, message = "Not Found"),
-                   @ApiResponse(code = 409, message = "Invalid password"),
+                   @ApiResponse(code = 403, message = "Invalid password"),
                    @ApiResponse(code = 500, message = "Internal Server Error")})
     @POST
     @Path("/password")
